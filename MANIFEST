@@ -1,0 +1,6 @@
+INSTALL
+LICENSE
+MANIFEST
+Makefile.PL
+bin/azu
+t/tests.t

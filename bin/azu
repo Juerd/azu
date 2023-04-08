@@ -1,0 +1,507 @@
+#!/usr/bin/perl
+use v5.24;
+use strict;
+use warnings;
+use autodie;
+use Net::DNS;
+use Getopt::Long qw(GetOptions);
+use File::Temp qw(tempfile);
+use POSIX qw(strftime);
+use FindBin qw($RealBin $RealScript $Script);
+$| = 1;
+
+our $VERSION = '1.0.0';
+my $usage = "Usage: man $0\n";
+
+sub usage {
+	no autodie;
+
+	open my $self, '<', "$RealBin/$RealScript" or warn "$RealScript: $!";
+	my @usage = grep { (/^=head. USAGE/ ... /^=head/) } readline $self;
+	$usage = join "", grep { /\S/ && !/^=/ } @usage, "\nFor more information: man $Script\n" if @usage;
+
+	die $usage;
+}
+
+
+GetOptions(
+	'increment'               => \my $increment,
+	'ymd'                     => \my $ymd,
+	'localtime'               => \my $localtime,
+	'origin=s'                => \my $origin,
+	'before|before-first=s'   => \my $before,
+	'before-every=s'          => \my $before_every,
+	'after|after-first=s'     => \my $after,
+	'after-every=s'           => \my $after_every,
+	'replace|replace-first=s' => \my $replace,
+	'replace-every=s'         => \my $replace_every,
+	'delete'                  => \my $delete,
+	'add|with=s'              => \my $add,
+	'or-at-eof'               => \my $at_eof,
+	'raw'                     => \my $raw,
+	'stdout'                  => \my $stdout,
+	'diff'                    => \my $diff,
+	'help'                    => \my $help,
+) or usage;
+
+usage if $help;
+
+my $every = 0;
+
+$increment = 1 if $ymd;
+$increment or defined $add or die "$0: Need at least --increment or --add\n";
+$before  and $before_every  and die "$0: Can't combine before and before_every\n";
+$after   and $after_every   and die "$0: Can't combine after and after_every\n";
+$replace and $replace_every and die "$0: Can't combine replace and replace_every\n";
+$before  = $before_every,  $every = 1 if $before_every;
+$after   = $after_every,   $every = 1 if $after_every;
+$replace = $replace_every, $every = 1 if $replace_every;
+$before  and not defined $add and die "$0: --before requires --add\n";
+$after   and not defined $add and die "$0: --after requires --add\n";
+$replace and not defined $add and die "$0: --replace requires --with\n";
+$delete and !$replace and die "$0: --delete requires --replace\n";
+$after  and $before  and die "$0: Can't combine after and before\n";
+$after  and $replace and die "$0: Can't combine after and replace\n";
+$before and $replace and die "$0: Can't combine before and replace\n";
+$at_eof = 1 unless $after or $before or $replace;
+$diff and $stdout and die "$0: Can't combine --diff and --stdout\n";
+$diff and not @ARGV and die "$0: Can't use --diff with stdin\n";
+$stdout = 1 unless @ARGV;
+
+my $regex;
+my $query = $before // $after // $replace;
+if ($query and $query =~ s[\/(.*?)\/(i)?\s*$][]) {
+	$regex = $1;
+	$regex = qr/$regex/i if $2;
+}
+
+my @unlink;
+
+sub _owner_match {
+	my ($r, $s) = @_;
+
+	return 1 if lc($r) eq lc($s);
+	return 0 if $s !~ /\*/;
+	$s = quotemeta lc $s;
+	$s =~ s/\\\*/.*/g;
+	return !!(lc($r) =~ /^$s\z/);
+}
+
+sub _new_rr_line {
+	my ($input, $rr, $new) = @_;
+
+	return '' if $add eq '';
+
+	if ($raw) {
+		my ($owner) = $input =~ /(\S*)/;
+		my $line = $add =~ s/^%/$owner/r;
+		return $line . "\n";
+	}
+
+	local $new->{owner} = $new->{owner};
+	local $new->{ttl} = $rr->{ttl};
+	if (_owner_match($new->owner, '%.*')) {
+		$new->{owner} = $rr->{owner}
+	}
+	return $new->string . "\n";
+}
+
+my $zone_regex = qr{
+	\G
+	(?<RR> (?&record) \h*+ \r?\n? | \r?\n | . )
+
+	(?(DEFINE)
+		(?<comment> ; \h* )
+		(?<linespan> \( (?: \s*+ (?&token) )++ \s*+ \) )
+		(?<quoted> " (?: [^"\\]*+ (?:\\.)?+ )++ " )
+		(?<token> (?: [^\s(;")\\]++ (?:\\.)?+ )++ | (?&linespan) | (?&comment) | (?&quoted) )
+		(?<record> (?: \h*+ (?&token) )++ )
+	)
+}sx;
+
+sub handle_file {
+	my ($fn, $fh, $origin) = @_;
+
+	local $/;
+	my $zone = readline $fh;
+	defined $zone and length($zone) > 10 or die "Not a zone file.\n";
+	my $outfh;
+	my $outfn;
+
+	if ($stdout) {
+		select STDOUT;
+	} else {
+		($outfh, $outfn) = tempfile("$fn.tmp.$$.XXXXXX");
+		select $outfh;
+		push @unlink, $outfn;
+	}
+
+	my $context = Net::DNS::Domain->origin(undef);
+	$context   = $context->(sub { Net::DNS::Domain->origin($origin) });
+	my $search = $query ? $context->(sub { Net::DNS::RR->new($query) }) : undef;
+	my $soa_rr = $context->(sub { Net::DNS::RR->new('@ SOA') });
+
+	my $new    = $add && !$raw ? $context->(sub { Net::DNS::RR->new($add) }) : undef;
+
+	my $previous;
+	my $done = 0;
+	my $rr_seen = 0;
+	my $errors = 0;
+
+	while ($zone =~ /$zone_regex/g) {
+		my $input = $+{RR};
+		my $positive;
+
+		M: {
+			if ($input =~ /^\$ORIGIN ([^;\v]*)/) {
+				$context = $context->(sub { Net::DNS::Domain->origin($1) });
+				if ($search and not $rr_seen) {
+					$search = $context->(sub { Net::DNS::RR->new($query) });
+				}
+				if ($new and not $rr_seen) {
+					$new = $context->(sub { Net::DNS::RR->new($add) });
+				}
+				last M;
+			}
+			last M if $input =~ /^\s*(?:;.*+)?[\r\n]*+\z/;  # skip blank lines and comments
+			last M if $input =~ /^\$/;  # skip control entries;
+
+			my $use = $input;
+
+			my $noname = $use =~ s/^\s/@\t/;
+			my $rr = eval { $context->(sub { Net::DNS::RR->new($use) }) };
+			if (not $rr) {
+				$use =~ s/\s+$//;
+				# XXX this offset only makes sense for length 1
+				warn "$0: $fn: Could not parse '$use' at offset " . (pos($zone)-1) . ".\n";
+				die "Too many errors; giving up." if ++$errors >= 10;
+				last M;
+			}
+			$rr->{owner} = $previous->{owner} if $noname && $previous;
+			$previous = $rr;
+
+			$rr_seen++;
+
+			if ($increment and _owner_match($rr->owner, $soa_rr->owner) and $rr->type eq $soa_rr->type) {
+				my $serial = $rr->serial;
+				my $new_serial = $serial + 1;
+				if ($ymd) {
+					my $s = strftime '%Y%m%d\\K(..)', $localtime ? localtime : gmtime;
+					my $ns = $serial =~ /^$s$/
+						? ($1 eq '99' ? $serial + 1 : $serial =~ s/^$s$/sprintf "%02d", $1 + 1/er)
+						: $s =~ s/\\K.*/01/r;
+
+					if ($ns > $serial) {
+						$new_serial = $ns;
+					} else {
+						warn "$0: $fn: YMD serial $ns would not be greater than existing $serial, falling back to simple increment.\n";
+					}
+				}
+
+				$input =~ s/\b$serial\b(?!\.)/$new_serial/e;
+				last M;
+			}
+
+			last M if not $search;
+
+			last M if not _owner_match($rr->owner, $search->owner);
+			last M if $rr->type ne $search->type;
+			last M if $search->rdata and $rr->rdata ne $search->rdata;
+			last M if $regex and $rr->rdstring !~ $regex;
+			#warn "\e[31;1mFOUND IT\e[m: " . $rr->string . "\n";
+
+			$positive = _new_rr_line($input, $rr, $new);
+		};
+
+		if (defined $positive and ($every or not $done)) {
+			if ($before) {
+				print $positive;
+				print $input;
+			} elsif ($after) {
+				print $input;
+				print $positive;
+			} elsif ($replace) {
+				print ";$input" unless $delete;
+				print $positive;
+			}
+			$done++;
+		} else {
+			print $input;
+		}
+	}
+
+	if (!$done and $at_eof and defined $add) {
+		# Use $search as base for replacing %, as last resort
+		print _new_rr_line($query, $search, $new);
+	}
+
+	close $outfh if $diff or not $stdout;
+	system 'diff', '-u', $fn, $outfn if $diff;
+	rename $outfn, $fn if not $diff and not $stdout;
+
+	return 1;
+}
+
+if (@ARGV) {
+	for my $fn (@ARGV) {
+		my $o = $origin;
+		open my $fh, '<', $fn;
+		eval {
+			if (not $o) {
+				($o = $fn) =~ s/(?:\.zone|\.txt|\.db)$//;
+				$o =~ s[.*/][];
+				if ($o =~ /^[^A-Za-z0-9_.-]{2,}\z/) {
+					warn "$0: $fn: Could not derive origin from file name\n";
+					$o = ".";
+				}
+			}
+			handle_file $fn, $fh, $o;
+		} or warn "$0: $fn: $@";
+	}
+} else {
+	handle_file 'stdin', \*STDIN, $origin // 'stdin.example.org.';
+}
+
+for (@unlink) {
+	no autodie;
+	-e and unlink;
+}
+
+# TODO jargon gelijktrekken
+#
+__END__
+
+=head1 NAME
+
+azu - Artisanal Zonefile Updater
+
+=head1 USAGE
+
+  azu
+    [--increment]                Increment SOA serial
+    [--ymd]                      Use YYYYMMDDnn style serials
+    [--origin <DOMAIN>]          Use explicit origin
+    [--after|--before <MATCH>]   Add before first or after last match
+    [--replace <MATCH>]          Delete existing matching records
+    [--or-at-eof]                Add to end of zone file if no match
+    [--add <RECORD>]             Record to add at given location
+    [--raw]                      Don't parse and reformat RECORD
+    [--stdout]                   Write to stdout, don't change file
+    [--diff]                     show unified diff, don't change file
+    [--]
+    <FILENAME>...                Zone file(s)
+
+=head1 EXAMPLES
+
+  # update serial in ALL zone files
+  azu --ymd *.zone
+
+  # New IP address
+  azu --replace-every '* A 192.0.2.123' --with '% A 192.0.2.42'
+
+  # Yay, we added IPv6
+  azu --after-every '* A 192.0.2.123' --add '% AAAA 2001:db8::42'
+
+  # Let's drop IPv4 support
+  azu --replace-every '* A' --with ''
+
+  # New server to add to the pool
+  azu --before-first  'round-robin AAAA' --or-at-eof --add '% AAAA 2001:db8::42'
+
+  # Remove server from the pool
+  azu --replace 'round-robin AAAA 2001:db8::42' --with ''
+  azu --replace 'round-robin AAAA 2001:db8::42' --with '' --delete
+
+  # Add an SPF record; if there already is one, replace it
+  azu --replace '@ TXT /v=spf1/' --or-at-eof --add '@ TXT "v=spf1; a mx -all"'
+
+  # Add a verification tag
+  azu --add '@ TXT "google-site-verification=..."'
+
+  # Update Let's Encrypt challenge
+  azu --replace-every '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+
+Typically, you would use C<--increment> or C<--ymd> with every invocation, and
+the name of the file to update.
+
+Speaking of typical invocations,
+
+  d=example.org
+  azu ... $d.zone && git commit -mupdate $d.zone && nsd-control reload $d && nsd-notify $d
+
+=head1 DESCRIPTION
+
+Azu is a simple tool for updating RFC 1035 DNS zone files, that leaves existing
+formatting intact. This allows automated changes to otherwise hand-crafted
+(hence "artisanal") DNS zones. Because it does not reformat the rest of the
+zone file, it works well with C<diff> and C<git>.
+
+I wrote this tool because every other DNS changing tool that I could find would
+either reformat the zone file completely (deleting comments in the process!), or
+have extremely limited matching options. Some existing utilities also dive into
+C<$INCLUDE>, while I find that in practice, I would rather not have any
+automated tool touch the include files unless that's explicitly requested.
+
+Azu was inspired by Ansible's C<lineinfile>.
+
+=head2 --origin
+
+Sets the I<initial origin> for parsing the zone file. That is the origin which
+is used to interpret the zone file until a C<$ORIGIN> control entry is encountered,
+and that will be used to interpret any record query or new record on the
+command line if the zone file does not start with a C<$ORIGIN> control entry.
+
+If no C<--origin> is given, the initial origin will be derived from the
+filename, removing the C<.zone>, C<.txt>, or C<.db> extension if there is one,
+assuming that the rest of the filename is a valid domain name and the origin of
+the zone file.
+
+Note that when using multiple zone file, C<--origin> is not of much help. Using
+multiple files in one command only makes sense if the origins can be derived
+from the filenames or if the files have $ORIGIN at the top.
+
+=head2 --increment
+
+Increment the serial number in any SOA record that matches the initial origin.
+
+=head2 --ymd
+
+Use 10 digit yyyymmddnn serial numbers per RIPE-203. Implies C<--increment>.
+
+Uses UTC for the date, unless C<--localtime> is also provided.
+
+Falls back to simple +1 increment if the resulting serial number is invalid (nn
+> 99) or not greater than the old one.
+
+=head2 C<--add RECORD>
+
+Add the given record to the zone file.
+
+The given record is parsed and reformatted unless C<--raw> is used; use C<%> as
+the record name to keep the name that was parsed from the matching record.
+
+If the matching record had an explicit TTL, it is copied over to the new
+record unless C<--raw> is used.
+
+=head2 --raw
+
+Don't parse and reformat the new record to be added, but just write a line of
+text to the zone file. This allows you to keep the artisanal appearance of your
+zone file, and to introduce different kinds of syntax errors.
+
+In this case, any explicit TTL from the matched record is not carried over.
+
+=head2 --before[-first|-every] MATCH
+
+=head2 --after[-first|-every] MATCH
+
+=head2 --replace[-first|-every] MATCH
+
+Selects where in the zone file to add the record provided with C<--add>.
+
+	<host> [<type> [<rdata|regex>]]
+
+	'@ MX'
+	'@ MX 10 mx1.example.org.'
+	'@ MX /mx\d/i'
+
+The match is formatted and parsed like a regular record, but the value (rdata)
+may be omitted. Records that match ALL provided fields will match; the name and
+type comparisons are case insensitive. The rdata is compared for binary
+equivalence, which means that IP addresses are normalized (e.g. 2001:db8::1 is
+equal to 2001:db8::0:0:1), but also that the entire rdata must be exactly
+equal.
+
+When the MATCH has a C</regex/> instead of regular rdata, optionally ending in
+C<i> for case insensitive matches, the rdata is stringified and then matched
+against the regex.
+
+There are a few limitations for regexes: a regex containing a literal C</> is
+currently not supported, not even if you escape it. Regex anchors like C<^> and
+C<$> might produce unexpected results because the rdata string it's executed
+against might be quoted. Similarly, there may be gaps in the data of long TXT
+records. Keep your regexes short and simple.
+
+Relative names are expanded using the I<initial origin> of the zone file (see
+C<--origin>).
+
+C<*> wildcards are supported for matching names. Wildcards are supported within
+name parts (e.g. C<ns*> will match C<ns1> or C<nsexample>) and subject to
+origin expansion; C<*.> (including the dot) can be used to match names outside
+the file's primary origin.
+
+C<-first> is the default if you don't specify C<-first> or C<every>.
+
+TTLs are ignored but this may change in a future version; don't use a TTL in a
+match.
+
+=head2 --or-at-eof
+
+When any match is given, C<--or-at-eof> can be used to add the given record to
+the end of the file if no match was found.
+
+When C<--add> is used without any matching rule, the given record will be added
+to the end of the zone file unconditionally.
+
+=head2 C<--with RECORD>
+
+C<--with> is the same as C<--add>, but intended for use with C<--replace>.
+
+When an empty string (C<>), will comment the record.
+
+=head2 C<--delete>
+
+Instead of adding a C<;> to comment the records replaced with C<--replace
+--with ''>, delete them.
+
+=head2 C<--stdout>, C<FILENAME>
+
+When no filename is given, a single zone file is expected on stdin, and the
+output is given on stdout. When one or more filenames are given, the files will
+be edited unless C<--stdout> is used to output to stdout instead.
+
+=head1 CAVEATS
+
+=over 2
+
+=item * C<$INCLUDE> is intentionally not supported.
+
+=item * If the original SOA serial number also occurs in the same SOA record
+before the actual serial, the wrong thing is changed. This is unlikely to
+happen.
+
+=item * End-of-line comments on the same line as the matched record, are lost
+when you use C<--replace --delete>.
+
+=item * There is currently no way to match a wildcard record without matching
+non-wildcard records that would also match the wildcard.
+
+=item * Garbage in, garbage out. If something in the input file could not be
+parsed, it is kept as-is. If MATCH or RECORD is invalid, though, garbage may
+end up in the output file. A dry run with C<--stdout> is recommended whenever
+you're trying something new.
+
+=item * The class is IN. The separator is tab. These are currently not
+configurable; use C<--raw> if you want something more specific.
+
+=back
+
+=head1 DISCLAIMER
+
+This free software does not come with any warranty. Use at your own risk.
+
+Evaluate if this tool is good enough for your use case, before depending on it
+in production. Even though it has been tested thoroughly, there may be bugs,
+and due to the nature of DNS, such bugs could cause services to be rendered
+unreachable. Any downtime caused by broken zone files is your own problem.
+
+If this program does anything wrong, a bug report is appreciated. If it failed
+spectacularly, please share the story for everyone's entertainment. :)
+
+Don't forget to make a backup of any important file you change. Git is great
+for zone files!
+
+=head1 AUTHOR
+
+Juerd Waalboer <juerd@tnx.nl>
+
