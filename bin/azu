@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '1.1.0';
+our $VERSION = '1.1.1';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -83,8 +83,6 @@ if ($query and $query =~ s[\/(.*?)\/(i)?\s*$][]) {
 	$regex = $1;
 	$regex = qr/$regex/i if $2;
 }
-
-my @unlink;
 
 sub _owner_match {
 	my ($r, $s) = @_;
@@ -253,12 +251,12 @@ sub handle_file {
 		print STDOUT $out;
 	} else {
 		my ($outfh, $outfn) = tempfile("$fn.tmp.$$.XXXXXX");
-		push @unlink, $outfn;
 		print $outfh $out;
 		close $outfh;
 
 		if ($diff) {
 			system 'diff', '-u', $fn, $outfn;
+			unlink $outfn;
 		} else {
 			rename $outfn, $fn;
 		}
@@ -285,11 +283,6 @@ if (@ARGV) {
 	}
 } else {
 	handle_file 'stdin', \*STDIN, $origin // 'stdin.example.org.';
-}
-
-for (@unlink) {
-	no autodie;
-	-e and unlink;
 }
 
 __END__
