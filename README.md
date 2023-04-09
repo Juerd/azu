@@ -106,7 +106,7 @@ Uses UTC for the date, unless `--localtime` is also provided.
 Falls back to simple +1 increment if the resulting serial number is invalid (nn
 \> 99) or not greater than the old one.
 
-## `--add RECORD`
+## --add RECORD
 
 Add the given record to the zone file.
 
@@ -176,18 +176,18 @@ the end of the file if no match was found.
 When `--add` is used without any matching rule, the given record will be added
 to the end of the zone file unconditionally.
 
-## `--with RECORD`
+## --with RECORD
 
 `--with` is the same as `--add`, but intended for use with `--replace`.
 
 When an empty string (``), will comment the record.
 
-## `--delete`
+## --delete
 
 Instead of adding a `;` to comment the records replaced with `--replace
 \--with ''`, delete them.
 
-## `--stdout`, `FILENAME`
+## --stdout, FILENAME
 
 When no filename is given, a single zone file is expected on stdin, and the
 output is given on stdout. When one or more filenames are given, the files will
