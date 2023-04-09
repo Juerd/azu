@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '1.1.1';
+our $VERSION = '2.0.0';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -44,6 +44,7 @@ GetOptions(
 	'raw'                     => \my $raw,
 	'stdout'                  => \my $stdout,
 	'diff'                    => \my $diff,
+	'diff-only'               => \my $diff_only,
 	'help'                    => \my $help,
 ) or usage;
 
@@ -73,9 +74,10 @@ $match and $after   and die "$0: Can't combine --match and --after";
 $match and $replace and die "$0: Can't combine --match and --replace";
 $match and not defined($if_match_count)||defined($unless_match_count)
 	and warn "Useless use of --match";
-$diff and $stdout and die "$0: Can't combine --diff and --stdout\n";
 $diff and not @ARGV and die "$0: Can't use --diff with stdin\n";
-$stdout = 1 unless @ARGV;
+$diff_only and $stdout and die "$0: Can't combine --diff-only and --stdout\n";
+$diff = 1 if $diff_only;
+$stdout = 1 if !@ARGV and !$diff_only;
 
 my $regex;
 my $query = $before // $after // $replace // $match;
@@ -249,13 +251,16 @@ sub handle_file {
 
 	if ($stdout) {
 		print STDOUT $out;
-	} else {
+	}
+
+	if ($diff or not $stdout) {
 		my ($outfh, $outfn) = tempfile("$fn.tmp.$$.XXXXXX");
 		print $outfh $out;
 		close $outfh;
 
-		if ($diff) {
-			system 'diff', '-u', $fn, $outfn;
+		system 'diff', '-u', $fn, $outfn if $diff;
+
+		if ($stdout or $diff_only) {
 			unlink $outfn;
 		} else {
 			rename $outfn, $fn;
@@ -310,7 +315,8 @@ azu - Artisanal Zonefile Updater
     [--unless-match-count <N>]   Don't make changes if there are N matches
     [--raw]                      Don't parse and reformat RECORD
     [--stdout]                   Write to stdout, don't change file
-    [--diff]                     Show unified diff, don't change file
+    [--diff]                     Show unified diff afterwards
+    [--diff-only]                Show unified diff, don't change file
     [--help]                     Show usage information
     [--]
     <FILENAME>...                Zone file(s)
@@ -496,6 +502,14 @@ together with C<--match> (which is like C<--after> etc.).
 When no filename is given, a single zone file is expected on stdin, and the
 output is given on stdout. When one or more filenames are given, the files will
 be edited unless C<--stdout> is used to output to stdout instead.
+
+=head2 --diff
+
+Show a unified diff of the changes afterwards.
+
+=head2 --diff-only
+
+Like C<-diff>, but don't actually make the changes.
 
 =head1 CAVEATS
 

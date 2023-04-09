@@ -21,7 +21,8 @@ azu - Artisanal Zonefile Updater
       [--unless-match-count <N>]   Don't make changes if there are N matches
       [--raw]                      Don't parse and reformat RECORD
       [--stdout]                   Write to stdout, don't change file
-      [--diff]                     Show unified diff, don't change file
+      [--diff]                     Show unified diff afterwards
+      [--diff-only]                Show unified diff, don't change file
       [--help]                     Show usage information
       [--]
       <FILENAME>...                Zone file(s)
@@ -207,6 +208,14 @@ together with `--match` (which is like `--after` etc.).
 When no filename is given, a single zone file is expected on stdin, and the
 output is given on stdout. When one or more filenames are given, the files will
 be edited unless `--stdout` is used to output to stdout instead.
+
+## --diff
+
+Show a unified diff of the changes afterwards.
+
+## --diff-only
+
+Like `-diff`, but don't actually make the changes.
 
 # CAVEATS
 
