@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '1.0.0';
+our $VERSION = '1.1.0';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -35,9 +35,12 @@ GetOptions(
 	'after-every=s'           => \my $after_every,
 	'replace|replace-first=s' => \my $replace,
 	'replace-every=s'         => \my $replace_every,
+	'match=s'                 => \my $match,
 	'delete'                  => \my $delete,
 	'add|with=s'              => \my $add,
 	'or-at-eof'               => \my $at_eof,
+	'if-match-count=i'        => \my $if_match_count,
+	'unless-match-count=i'    => \my $unless_match_count,
 	'raw'                     => \my $raw,
 	'stdout'                  => \my $stdout,
 	'diff'                    => \my $diff,
@@ -65,12 +68,17 @@ $after  and $before  and die "$0: Can't combine after and before\n";
 $after  and $replace and die "$0: Can't combine after and replace\n";
 $before and $replace and die "$0: Can't combine before and replace\n";
 $at_eof = 1 unless $after or $before or $replace;
+$match and $before  and die "$0: Can't combine --match and --before";
+$match and $after   and die "$0: Can't combine --match and --after";
+$match and $replace and die "$0: Can't combine --match and --replace";
+$match and not defined($if_match_count)||defined($unless_match_count)
+	and warn "Useless use of --match";
 $diff and $stdout and die "$0: Can't combine --diff and --stdout\n";
 $diff and not @ARGV and die "$0: Can't use --diff with stdin\n";
 $stdout = 1 unless @ARGV;
 
 my $regex;
-my $query = $before // $after // $replace;
+my $query = $before // $after // $replace // $match;
 if ($query and $query =~ s[\/(.*?)\/(i)?\s*$][]) {
 	$regex = $1;
 	$regex = qr/$regex/i if $2;
@@ -126,16 +134,7 @@ sub handle_file {
 	local $/;
 	my $zone = readline $fh;
 	defined $zone and length($zone) > 10 or die "Not a zone file.\n";
-	my $outfh;
-	my $outfn;
-
-	if ($stdout) {
-		select STDOUT;
-	} else {
-		($outfh, $outfn) = tempfile("$fn.tmp.$$.XXXXXX");
-		select $outfh;
-		push @unlink, $outfn;
-	}
+	my $out = '';
 
 	my $context = Net::DNS::Domain->origin(undef);
 	$context   = $context->(sub { Net::DNS::Domain->origin($origin) });
@@ -145,6 +144,7 @@ sub handle_file {
 	my $new    = $add && !$raw ? $context->(sub { Net::DNS::RR->new($add) }) : undef;
 
 	my $previous;
+	my $matches = 0;
 	my $done = 0;
 	my $rr_seen = 0;
 	my $errors = 0;
@@ -212,33 +212,57 @@ sub handle_file {
 			#warn "\e[31;1mFOUND IT\e[m: " . $rr->string . "\n";
 
 			$positive = _new_rr_line($input, $rr, $new);
+			$matches++;
 		};
 
 		if (defined $positive and ($every or not $done)) {
 			if ($before) {
-				print $positive;
-				print $input;
+				$out .= $positive;
+				$out .= $input;
+				$done++;
 			} elsif ($after) {
-				print $input;
-				print $positive;
+				$out .= $input;
+				$out .= $positive;
+				$done++;
 			} elsif ($replace) {
-				print ";$input" unless $delete;
-				print $positive;
+				$out .= ";$input" unless $delete;
+				$out .= $positive;
+				$done++;
+			} elsif ($match) {
+				$out .= $input;
+			} else {
+				die "Logic error";
 			}
-			$done++;
 		} else {
-			print $input;
+			$out .= $input;
 		}
+	}
+
+	if (defined $if_match_count and $if_match_count != $matches
+	or  defined $unless_match_count and $unless_match_count == $matches) {
+		print $zone if $stdout;
+		die "Match count condition not met.\n";
 	}
 
 	if (!$done and $at_eof and defined $add) {
 		# Use $search as base for replacing %, as last resort
-		print _new_rr_line($query, $search, $new);
+		$out .= _new_rr_line($query, $search, $new);
 	}
 
-	close $outfh if $diff or not $stdout;
-	system 'diff', '-u', $fn, $outfn if $diff;
-	rename $outfn, $fn if not $diff and not $stdout;
+	if ($stdout) {
+		print STDOUT $out;
+	} else {
+		my ($outfh, $outfn) = tempfile("$fn.tmp.$$.XXXXXX");
+		push @unlink, $outfn;
+		print $outfh $out;
+		close $outfh;
+
+		if ($diff) {
+			system 'diff', '-u', $fn, $outfn;
+		} else {
+			rename $outfn, $fn;
+		}
+	}
 
 	return 1;
 }
@@ -289,6 +313,8 @@ azu - Artisanal Zonefile Updater
      --with <RECORD>             Replace first or every match
      [--delete]]                 Delete instead of comment existing record
     [--or-at-eof]                Add to end of zone file if no match
+    [--if-match-count <N>]       Only make changes if there are N matches
+    [--unless-match-count <N>]   Don't make changes if there are N matches
     [--raw]                      Don't parse and reformat RECORD
     [--stdout]                   Write to stdout, don't change file
     [--diff]                     Show unified diff, don't change file
@@ -310,15 +336,18 @@ azu - Artisanal Zonefile Updater
   # Let's drop IPv4 support
   azu --replace-every '* A' --with ''
 
-  # New server to add to the pool
-  azu --before-first  'round-robin AAAA' --or-at-eof --add '% AAAA 2001:db8::42'
+  # New server to add to the round-robin pool
+  azu --before-first  'www AAAA' --or-at-eof --add '% AAAA 2001:db8::42'
 
-  # Remove server from the pool
-  azu --replace 'round-robin AAAA 2001:db8::42' --with ''
-  azu --replace 'round-robin AAAA 2001:db8::42' --with '' --delete
+  # Remove server from the round-robin pool, except if it's the only one
+  azu --replace 'www AAAA 2001:db8::42' --with '' --unless-match-count 1
+  azu --replace 'www AAAA 2001:db8::42' --with '' --unless-match-count 1 --delete
 
   # Add an SPF record; if there already is one, replace it
   azu --replace '@ TXT /v=spf1/' --or-at-eof --add '@ TXT "v=spf1; a mx -all"'
+
+  # Add an SPF record; if there already is one, keep it
+  azu --match '@ TXT /v=spf1/' --add '@ TXT "v=spf1; a mx -all"' --if-match-count 0
 
   # Add a verification tag
   azu --add '@ TXT "google-site-verification=..."'
@@ -458,6 +487,16 @@ When an empty string (C<>), will comment the record.
 
 Instead of adding a C<;> to comment the records replaced with C<--replace
 --with ''>, delete them.
+
+=head2 --if-match-count NUMBER
+
+=head2 --unless-match-count NUMBER
+
+Only change the zone file if the number of matches is or is not equal to the
+given number.
+
+To add a record only if it does not already exist, use C<--if-match-count 0>
+together with C<--match> (which is C<--after> in disguise).
 
 =head2 --stdout, FILENAME
 
