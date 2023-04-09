@@ -18,7 +18,7 @@ sub usage {
 
 	open my $self, '<', "$RealBin/$RealScript" or warn "$RealScript: $!";
 	my @usage = grep { (/^=head. USAGE/ ... /^=head/) } readline $self;
-	$usage = join "", grep { /\S/ && !/^=/ } @usage, "\nFor more information: man $Script\n" if @usage;
+	$usage = join "", grep { /\S/ && !/^=/ } @usage, "\nFor examples and details: man $Script\n" if @usage;
 
 	die $usage;
 }
@@ -49,6 +49,7 @@ usage if $help;
 my $every = 0;
 
 $increment = 1 if $ymd;
+$localtime and not $ymd and die "$0: --localtime requires --ymd\n";
 $increment or defined $add or die "$0: Need at least --increment or --add\n";
 $before  and $before_every  and die "$0: Can't combine before and before_every\n";
 $after   and $after_every   and die "$0: Can't combine after and after_every\n";
@@ -267,8 +268,6 @@ for (@unlink) {
 	-e and unlink;
 }
 
-# TODO jargon gelijktrekken
-#
 __END__
 
 =head1 NAME
@@ -279,15 +278,21 @@ azu - Artisanal Zonefile Updater
 
   azu
     [--increment]                Increment SOA serial
-    [--ymd]                      Use YYYYMMDDnn style serials
-    [--origin <DOMAIN>]          Use explicit origin
-    [--after|--before <MATCH>]   Add before first or after last match
-    [--replace <MATCH>]          Delete existing matching records
+    [--ymd [--localtime]]        Update YYYYMMDDnn style SOA serial
+    [--origin <DOMAIN>]          Use initial origin
+    [--add <RECORD>]             Add record to end of zone file
+    [--before[-first|-every] <MATCH>
+     --add <RECORD>]             Add record before first or every match
+    [--after[-first|-every] <MATCH>
+     --add <RECORD>]             Add record after first or every match
+    [--replace[-first|-every] <MATCH>
+     --with <RECORD>             Replace first or every match
+     [--delete]]                 Delete instead of comment existing record
     [--or-at-eof]                Add to end of zone file if no match
-    [--add <RECORD>]             Record to add at given location
     [--raw]                      Don't parse and reformat RECORD
     [--stdout]                   Write to stdout, don't change file
-    [--diff]                     show unified diff, don't change file
+    [--diff]                     Show unified diff, don't change file
+    [--help]                     Show usage information
     [--]
     <FILENAME>...                Zone file(s)
 
