@@ -200,7 +200,7 @@ Only change the zone file if the number of matches is or is not equal to the
 given number.
 
 To add a record only if it does not already exist, use `--if-match-count 0`
-together with `--match` (which is `--after` in disguise).
+together with `--match` (which is like `--after` etc.).
 
 ## --stdout, FILENAME
 
