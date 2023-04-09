@@ -3,7 +3,7 @@ use ExtUtils::MakeMaker;
 WriteMakefile(
     NAME          => 'azu',
     VERSION_FROM  => 'bin/azu',
-    ABSTRACT_FROM => 'bin/azu.pod',
+    ABSTRACT_FROM => 'bin/azu',
     EXE_FILES     => [ 'bin/azu' ],
     PREREQ_PM     => { },
     AUTHOR        => 'Juerd Waalboer <juerd@cpan.org>',
