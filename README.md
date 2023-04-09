@@ -89,7 +89,7 @@ filename, removing the `.zone`, `.txt`, or `.db` extension if there is one,
 assuming that the rest of the filename is a valid domain name and the origin of
 the zone file.
 
-Note that when using multiple zone file, `--origin` is not of much help. Using
+Note that when using multiple zone files, `--origin` is not of much help. Using
 multiple files in one command only makes sense if the origins can be derived
 from the filenames or if the files have $ORIGIN at the top.
 
