@@ -17,6 +17,8 @@ azu - Artisanal Zonefile Updater
        --with <RECORD>             Replace first or every match
        [--delete]]                 Delete instead of comment existing record
       [--or-at-eof]                Add to end of zone file if no match
+      [--if-match-count <N>]       Only make changes if there are N matches
+      [--unless-match-count <N>]   Don't make changes if there are N matches
       [--raw]                      Don't parse and reformat RECORD
       [--stdout]                   Write to stdout, don't change file
       [--diff]                     Show unified diff, don't change file
@@ -38,15 +40,18 @@ azu - Artisanal Zonefile Updater
     # Let's drop IPv4 support
     azu --replace-every '* A' --with ''
 
-    # New server to add to the pool
-    azu --before-first  'round-robin AAAA' --or-at-eof --add '% AAAA 2001:db8::42'
+    # New server to add to the round-robin pool
+    azu --before-first  'www AAAA' --or-at-eof --add '% AAAA 2001:db8::42'
 
-    # Remove server from the pool
-    azu --replace 'round-robin AAAA 2001:db8::42' --with ''
-    azu --replace 'round-robin AAAA 2001:db8::42' --with '' --delete
+    # Remove server from the round-robin pool, except if it's the only one
+    azu --replace 'www AAAA 2001:db8::42' --with '' --unless-match-count 1
+    azu --replace 'www AAAA 2001:db8::42' --with '' --unless-match-count 1 --delete
 
     # Add an SPF record; if there already is one, replace it
     azu --replace '@ TXT /v=spf1/' --or-at-eof --add '@ TXT "v=spf1; a mx -all"'
+
+    # Add an SPF record; if there already is one, keep it
+    azu --match '@ TXT /v=spf1/' --add '@ TXT "v=spf1; a mx -all"' --if-match-count 0
 
     # Add a verification tag
     azu --add '@ TXT "google-site-verification=..."'
@@ -186,6 +191,16 @@ When an empty string (``), will comment the record.
 
 Instead of adding a `;` to comment the records replaced with `--replace
 \--with ''`, delete them.
+
+## --if-match-count NUMBER
+
+## --unless-match-count NUMBER
+
+Only change the zone file if the number of matches is or is not equal to the
+given number.
+
+To add a record only if it does not already exist, use `--if-match-count 0`
+together with `--match` (which is `--after` in disguise).
 
 ## --stdout, FILENAME
 
