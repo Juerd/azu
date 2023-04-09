@@ -433,7 +433,7 @@ C<--origin>).
 C<*> wildcards are supported for matching names. Wildcards are supported within
 name parts (e.g. C<ns*> will match C<ns1> or C<nsexample>) and subject to
 origin expansion; C<*.> (including the dot) can be used to match names outside
-the file's primary origin.
+the file's I<initial origin>.
 
 C<-first> is the default if you don't specify C<-first> or C<every>.
 

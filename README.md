@@ -161,7 +161,7 @@ Relative names are expanded using the _initial origin_ of the zone file (see
 `*` wildcards are supported for matching names. Wildcards are supported within
 name parts (e.g. `ns*` will match `ns1` or `nsexample`) and subject to
 origin expansion; `*.` (including the dot) can be used to match names outside
-the file's primary origin.
+the file's _initial origin_.
 
 `-first` is the default if you don't specify `-first` or `every`.
 
