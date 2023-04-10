@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.0.0';
+our $VERSION = '2.0.1';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -135,6 +135,7 @@ sub handle_file {
 	my $zone = readline $fh;
 	defined $zone and length($zone) > 10 or die "Not a zone file.\n";
 	my $out = '';
+	my $chmod = (stat $fh)[2] & 07777;
 
 	my $context = Net::DNS::Domain->origin(undef);
 	$context   = $context->(sub { Net::DNS::Domain->origin($origin) });
@@ -263,6 +264,7 @@ sub handle_file {
 		if ($stdout or $diff_only) {
 			unlink $outfn;
 		} else {
+			chmod $chmod, $outfn;
 			rename $outfn, $fn;
 		}
 	}
