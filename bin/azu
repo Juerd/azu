@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.0.1';
+our $VERSION = '2.0.2';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -108,7 +108,7 @@ sub _new_rr_line {
 	}
 
 	local $new->{owner} = $new->{owner};
-	local $new->{ttl} = $rr->{ttl};
+	local $new->{ttl} = $new->{ttl} // $rr->{ttl};
 	if (_owner_match($new->owner, '%.*')) {
 		$new->{owner} = $rr->{owner}
 	}

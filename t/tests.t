@@ -328,4 +328,74 @@ END
 
 
 
+eq_or_diff(azu('--add' => '@ 123 TXT test'), <<'END', 'add record with explicit ttl');
+@  IN  SOA     ns0.dns-zoneparse-test.net.     support\.contact.dns-zoneparse-test.net.        (
+                        2000100502   ; serial number
+                        10801       ; refresh
+                        3600        ; retry
+                        691200      ; expire
+                        86400     ) ; minimum TTL
+ 
+         43200          IN      NS      ns0.dns-zoneparse-test.net.
+@                       IN      NS      ns1.dns-zoneparse-test.net.
+ 
+@                       IN      A       127.0.0.1
+@                       IN      MX      10      mail
+ftp                     IN      CNAME   www
+localhost               IN      A       127.0.0.1
+mail                    IN      A       127.0.0.1
+www                     IN      A       127.0.0.1
+                        in      a       10.0.0.2
+www      43200          IN      A       10.0.0.3
+foo                     IN      A       10.0.0.6
+mini                            A       10.0.0.7
+icarus                  IN      AAAA    fe80::0260:83ff:fe7c:3a2a
+
+$ORIGIN subdomain
+bla   A 127.0.0.1
+
+$ORIGIN different-absolute-origin.
+bla   A 127.0.0.1
+txttest1                        TXT     "I've\"got\\back\\\"slashes;!" ; com\\ent
+txttest2                        TXT     embedded\"quote ;comment
+txttest3                        TXT     noquotes;comment
+txttest4                        TXT     "MORE (complicated) stuff -h343-"
+origin.	123	IN	TXT	test
+END
+
+eq_or_diff(azu('--after' => '@ IN NS ns0.dns-zoneparse-test.net.', '--add' => '@ NS test'), <<'END', 'carry over ttl from existing record');
+@  IN  SOA     ns0.dns-zoneparse-test.net.     support\.contact.dns-zoneparse-test.net.        (
+                        2000100502   ; serial number
+                        10801       ; refresh
+                        3600        ; retry
+                        691200      ; expire
+                        86400     ) ; minimum TTL
+ 
+         43200          IN      NS      ns0.dns-zoneparse-test.net.
+origin.	43200	IN	NS	test.origin.
+@                       IN      NS      ns1.dns-zoneparse-test.net.
+ 
+@                       IN      A       127.0.0.1
+@                       IN      MX      10      mail
+ftp                     IN      CNAME   www
+localhost               IN      A       127.0.0.1
+mail                    IN      A       127.0.0.1
+www                     IN      A       127.0.0.1
+                        in      a       10.0.0.2
+www      43200          IN      A       10.0.0.3
+foo                     IN      A       10.0.0.6
+mini                            A       10.0.0.7
+icarus                  IN      AAAA    fe80::0260:83ff:fe7c:3a2a
+
+$ORIGIN subdomain
+bla   A 127.0.0.1
+
+$ORIGIN different-absolute-origin.
+bla   A 127.0.0.1
+txttest1                        TXT     "I've\"got\\back\\\"slashes;!" ; com\\ent
+txttest2                        TXT     embedded\"quote ;comment
+txttest3                        TXT     noquotes;comment
+txttest4                        TXT     "MORE (complicated) stuff -h343-"
+END
+
 done_testing;
