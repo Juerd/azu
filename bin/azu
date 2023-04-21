@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.0.2';
+our $VERSION = '2.0.3';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -226,7 +226,7 @@ sub handle_file {
 				$out .= $positive;
 				$done++;
 			} elsif ($replace) {
-				$out .= ";$input" unless $delete;
+				$out .= $input =~ s/(^|\cJ\cM?|\cM)(?!\z)/$1;/gr unless $delete;
 				$out .= $positive;
 				$done++;
 			} elsif ($match) {
