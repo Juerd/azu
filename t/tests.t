@@ -482,7 +482,7 @@ END
 
 
 
-eq_or_diff(azu('--replace-every' => '*. TXT', '--with' => ''), <<'END', 'comment existing records');
+eq_or_diff(azu('--after-every' => '*. TXT', '--add' => 'HERE', '--raw'), <<'END', 'test boundaries of multiline records');
 @  IN  SOA     ns0.dns-zoneparse-test.net.     support\.contact.dns-zoneparse-test.net.        (
                         2000100502   ; serial number
                         10801       ; refresh
@@ -510,18 +510,24 @@ bla   A 127.0.0.1
 
 $ORIGIN different-absolute-origin.
 bla   A 127.0.0.1
-;txttest1                        TXT     "I've\"got\\back\\\"slashes;!" ; com\\ent
-;txttest2                        TXT     embedded\"quote ;comment
-;txttest3                        TXT     noquotes;comment
-;txttest4                        TXT     "MORE (complicated) stuff -h343-"
-;txttest5                        TXT     (
-;                                         multi-line
-;                                         text
-;                                         record
-;                                        )
-;txttest6                        TXT     ( multi-line
-;                                         text
-;                                         record )
+txttest1                        TXT     "I've\"got\\back\\\"slashes;!" ; com\\ent
+HERE
+txttest2                        TXT     embedded\"quote ;comment
+HERE
+txttest3                        TXT     noquotes;comment
+HERE
+txttest4                        TXT     "MORE (complicated) stuff -h343-"
+HERE
+txttest5                        TXT     (
+                                         multi-line
+                                         text
+                                         record
+                                        )
+HERE
+txttest6                        TXT     ( multi-line
+                                         text
+                                         record )
+HERE
 END
 
 

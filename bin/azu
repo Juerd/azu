@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.0.3';
+our $VERSION = '2.0.4';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -115,15 +115,17 @@ sub _new_rr_line {
 	return $new->string . "\n";
 }
 
+my $NL = '(?:\r\n?|\r)';
+
 my $zone_regex = qr{
 	\G
-	(?<RR> (?&record) \h*+ \r?\n? | \r?\n | . )
+	(?<RR> (?&comment) $NL | (?&record) \h*+ \r?\n? | \r?\n | . )
 
 	(?(DEFINE)
-		(?<comment> ; \h* )
+		(?<comment> ; \V*+ )
 		(?<linespan> \( (?: \s*+ (?&token) )++ \s*+ \) )
 		(?<quoted> " (?: [^"\\]*+ (?:\\.)?+ )++ " )
-		(?<token> (?: [^\s(;")\\]++ (?:\\.)?+ )++ | (?&linespan) | (?&comment) | (?&quoted) )
+		(?<token> (?: (?&comment) | (?&linespan) | (?&quoted) | [^\s(;")\\]++ (?:\\.)?+ )++ )
 		(?<record> (?: \h*+ (?&token) )++ )
 	)
 }sx;
@@ -173,9 +175,10 @@ sub handle_file {
 			my $noname = $use =~ s/^\s/@\t/;
 			my $rr = eval { $context->(sub { Net::DNS::RR->new($use) }) };
 			if (not $rr) {
+				my $pos = pos($zone) - length($use);
 				$use =~ s/\s+$//;
-				# XXX this offset only makes sense for length 1
-				warn "$0: $fn: Could not parse '$use' at offset " . (pos($zone)-1) . ".\n";
+				warn "$0: $fn: Could not parse '$use' at offset $pos.\n";
+
 				die "Too many errors; giving up." if ++$errors >= 10;
 				last M;
 			}
@@ -210,7 +213,6 @@ sub handle_file {
 			last M if $rr->type ne $search->type;
 			last M if $search->rdata and $rr->rdata ne $search->rdata;
 			last M if $regex and $rr->rdstring !~ $regex;
-			#warn "\e[31;1mFOUND IT\e[m: " . $rr->string . "\n";
 
 			$positive = _new_rr_line($input, $rr, $new);
 			$matches++;
