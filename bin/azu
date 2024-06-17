@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.0.4';
+our $VERSION = '2.1.0';
 my $usage = "Usage: man $0\n";
 
 sub usage {
@@ -41,6 +41,7 @@ GetOptions(
 	'or-at-eof'               => \my $at_eof,
 	'if-match-count=i'        => \my $if_match_count,
 	'unless-match-count=i'    => \my $unless_match_count,
+	'inline-includes'         => \my $inline_includes,
 	'raw'                     => \my $raw,
 	'stdout'                  => \my $stdout,
 	'diff'                    => \my $diff,
@@ -54,7 +55,6 @@ my $every = 0;
 
 $increment = 1 if $ymd;
 $localtime and not $ymd and die "$0: --localtime requires --ymd\n";
-$increment or defined $add or die "$0: Need at least --increment or --add\n";
 $before  and $before_every  and die "$0: Can't combine before and before_every\n";
 $after   and $after_every   and die "$0: Can't combine after and after_every\n";
 $replace and $replace_every and die "$0: Can't combine replace and replace_every\n";
@@ -78,6 +78,8 @@ $diff and not @ARGV and die "$0: Can't use --diff with stdin\n";
 $diff_only and $stdout and die "$0: Can't combine --diff-only and --stdout\n";
 $diff = 1 if $diff_only;
 $stdout = 1 if !@ARGV and !$diff_only;
+$stdout or $increment or defined $add or die "$0: Need at least --increment, --add, or --stdout\n";
+$inline_includes and !$stdout and die "--inline-includes requires --stdout\n";
 
 my $regex;
 my $query = $before // $after // $replace // $match;
@@ -133,10 +135,6 @@ my $zone_regex = qr{
 sub handle_file {
 	my ($fn, $fh, $origin) = @_;
 
-	local $/;
-	my $zone = readline $fh;
-	defined $zone and length($zone) > 10 or die "Not a zone file.\n";
-	my $out = '';
 	my $chmod = (stat $fh)[2] & 07777;
 
 	my $context = Net::DNS::Domain->origin(undef);
@@ -151,95 +149,134 @@ sub handle_file {
 	my $done = 0;
 	my $rr_seen = 0;
 	my $errors = 0;
+
+	my sub transform_zone {
+		my ($zone) = @_;
+		my $out = '';
 
-	while ($zone =~ /$zone_regex/g) {
-		my $input = $+{RR};
-		my $positive;
+		RR: while ($zone =~ /$zone_regex/g) {
+			my $input = $+{RR};
+			my $positive;
 
-		M: {
-			if ($input =~ /^\$ORIGIN ([^;\v]*)/) {
-				$context = $context->(sub { Net::DNS::Domain->origin($1) });
-				if ($search and not $rr_seen) {
-					$search = $context->(sub { Net::DNS::RR->new($query) });
-				}
-				if ($new and not $rr_seen) {
-					$new = $context->(sub { Net::DNS::RR->new($add) });
-				}
-				last M;
-			}
-			last M if $input =~ /^\s*(?:;.*+)?[\r\n]*+\z/;  # skip blank lines and comments
-			last M if $input =~ /^\$/;  # skip control entries;
-
-			my $use = $input;
-
-			my $noname = $use =~ s/^\s/@\t/;
-			my $rr = eval { $context->(sub { Net::DNS::RR->new($use) }) };
-			if (not $rr) {
-				my $pos = pos($zone) - length($use);
-				$use =~ s/\s+$//;
-				warn "$0: $fn: Could not parse '$use' at offset $pos.\n";
-
-				die "Too many errors; giving up." if ++$errors >= 10;
-				last M;
-			}
-			$rr->{owner} = $previous->{owner} if $noname && $previous;
-			$previous = $rr;
-
-			$rr_seen++;
-
-			if ($increment and _owner_match($rr->owner, $soa_rr->owner) and $rr->type eq $soa_rr->type) {
-				my $serial = $rr->serial;
-				my $new_serial = $serial + 1;
-				if ($ymd) {
-					my $s = strftime '%Y%m%d\\K(..)', $localtime ? localtime : gmtime;
-					my $ns = $serial =~ /^$s$/
-						? ($1 eq '99' ? $serial + 1 : $serial =~ s/^$s$/sprintf "%02d", $1 + 1/er)
-						: $s =~ s/\\K.*/01/r;
-
-					if ($ns > $serial) {
-						$new_serial = $ns;
-					} else {
-						warn "$0: $fn: YMD serial $ns would not be greater than existing $serial, falling back to simple increment.\n";
+			M: {
+				if ($input =~ /^\$ORIGIN ([^;\v]*)/) {
+					$context = $context->(sub { Net::DNS::Domain->origin($1) });
+					if ($search and not $rr_seen) {
+						$search = $context->(sub { Net::DNS::RR->new($query) });
 					}
+					if ($new and not $rr_seen) {
+						$new = $context->(sub { Net::DNS::RR->new($add) });
+					}
+					last M;
+				}
+				if ($inline_includes and $input =~ /^\$INCLUDE\s+(?<filename>\S+)(?:\s+(?<origin>\S+))?/) {
+					my $include_origin = $+{origin};
+
+					open my $include_fh, '<', $+{filename};
+					my $include_contents = do { local $/; readline $include_fh; };
+					close $include_fh;
+
+					my $old_context = $context;
+					my $old_origin = $context->(sub { Net::DNS::RR->new("@ IN TXT dummy") })->name;
+
+					if ($include_origin) {
+						$context = $context->(sub { Net::DNS::Domain->origin($include_origin) });
+						$include_origin = $context->(sub { Net::DNS::RR->new("@ IN TXT dummy") })->name;
+						$out .= "\$ORIGIN $include_origin.\n";
+					}
+
+					$out .= __SUB__->($include_contents);
+
+					# Restore origin if changed by or in the include
+					my $origin = $context->(sub { Net::DNS::RR->new("@ IN TXT dummy") })->name;
+					$context = $old_context;
+					if ($origin ne $old_origin) {
+						$out .= "\$ORIGIN $old_origin.\n";
+					}
+
+					next RR;
+				}
+				last M if $input =~ /^\s*(?:;.*+)?[\r\n]*+\z/;  # skip blank lines and comments
+				last M if $input =~ /^\$/;  # skip control entries;
+
+				my $use = $input;
+
+				my $noname = $use =~ s/^\s/@\t/;
+				my $rr = eval { $context->(sub { Net::DNS::RR->new($use) }) };
+				if (not $rr) {
+					my $pos = pos($zone) - length($use);
+					$use =~ s/\s+$//;
+					warn "$0: $fn: Could not parse '$use' at offset $pos.\n";
+
+					die "Too many errors; giving up." if ++$errors >= 10;
+					last M;
+				}
+				$rr->{owner} = $previous->{owner} if $noname && $previous;
+				$previous = $rr;
+
+				$rr_seen++;
+
+				if ($increment and _owner_match($rr->owner, $soa_rr->owner) and $rr->type eq $soa_rr->type) {
+					my $serial = $rr->serial;
+					my $new_serial = $serial + 1;
+					if ($ymd) {
+						my $s = strftime '%Y%m%d\\K(..)', $localtime ? localtime : gmtime;
+						my $ns = $serial =~ /^$s$/
+							? ($1 eq '99' ? $serial + 1 : $serial =~ s/^$s$/sprintf "%02d", $1 + 1/er)
+							: $s =~ s/\\K.*/01/r;
+
+						if ($ns > $serial) {
+							$new_serial = $ns;
+						} else {
+							warn "$0: $fn: YMD serial $ns would not be greater than existing $serial, falling back to simple increment.\n";
+						}
+					}
+
+					$input =~ s/\b$serial\b(?!\.)/$new_serial/e;
+					last M;
 				}
 
-				$input =~ s/\b$serial\b(?!\.)/$new_serial/e;
-				last M;
-			}
+				last M if not $search;
 
-			last M if not $search;
+				last M if not _owner_match($rr->owner, $search->owner);
+				last M if $rr->type ne $search->type;
+				last M if $search->rdata and $rr->rdata ne $search->rdata;
+				last M if $regex and $rr->rdstring !~ $regex;
 
-			last M if not _owner_match($rr->owner, $search->owner);
-			last M if $rr->type ne $search->type;
-			last M if $search->rdata and $rr->rdata ne $search->rdata;
-			last M if $regex and $rr->rdstring !~ $regex;
+				$positive = _new_rr_line($input, $rr, $new);
+				$matches++;
+			};
 
-			$positive = _new_rr_line($input, $rr, $new);
-			$matches++;
-		};
-
-		if (defined $positive and ($every or not $done)) {
-			if ($before) {
-				$out .= $positive;
-				$out .= $input;
-				$done++;
-			} elsif ($after) {
-				$out .= $input;
-				$out .= $positive;
-				$done++;
-			} elsif ($replace) {
-				$out .= $input =~ s/(^|\cJ\cM?|\cM)(?!\z)/$1;/gr unless $delete;
-				$out .= $positive;
-				$done++;
-			} elsif ($match) {
-				$out .= $input;
+			if (defined $positive and ($every or not $done)) {
+				if ($before) {
+					$out .= $positive;
+					$out .= $input;
+					$done++;
+				} elsif ($after) {
+					$out .= $input;
+					$out .= $positive;
+					$done++;
+				} elsif ($replace) {
+					$out .= $input =~ s/(^|\cJ\cM?|\cM)(?!\z)/$1;/gr unless $delete;
+					$out .= $positive;
+					$done++;
+				} elsif ($match) {
+					$out .= $input;
+				} else {
+					die "Logic error";
+				}
 			} else {
-				die "Logic error";
+				$out .= $input;
 			}
-		} else {
-			$out .= $input;
 		}
+
+		return $out;
 	}
+
+	my $zone = do { local $/; readline $fh; };
+	defined $zone and length($zone) > 10 or die "Not a zone file.\n";
+
+	my $out = transform_zone($zone);
 
 	if (defined $if_match_count and $if_match_count != $matches
 	or  defined $unless_match_count and $unless_match_count == $matches) {
@@ -319,6 +356,7 @@ azu - Artisanal Zonefile Updater
     [--unless-match-count <N>]   Don't make changes if there are N matches
     [--raw]                      Don't parse and reformat RECORD
     [--stdout]                   Write to stdout, don't change file
+    [--inline-includes]          Process and inline $INCLUDE entries
     [--diff]                     Show unified diff afterwards
     [--diff-only]                Show unified diff, don't change file
     [--help]                     Show usage information
@@ -358,6 +396,10 @@ azu - Artisanal Zonefile Updater
   # Update Let's Encrypt challenge
   azu --replace-every '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
 
+  # Create an "inlined" version of a zone file that has $INCLUDE entries, and sign it:
+  azu --stdout --inline-includes example.org > example.org.inlined
+  ldns-signzone example.org.inlined -f example.org.signed $zskfile $kskfile
+
 Typically, you would use C<--increment> or C<--ymd> with every invocation, and
 the name of the file to update.
 
@@ -376,8 +418,9 @@ zone file, it works well with C<diff> and C<git>.
 I wrote this tool because every other DNS changing tool that I could find would
 either reformat the zone file completely (deleting comments in the process!), or
 have extremely limited matching options. Some existing utilities also dive into
-C<$INCLUDE>, while I find that in practice, I would rather not have any
-automated tool touch the include files unless that's explicitly requested.
+C<$INCLUDE> unconditionally, while I find that in practice, I would rather not
+have any automated tool touch the include files unless that's explicitly
+requested.
 
 Azu was inspired by Ansible's C<lineinfile>.
 
@@ -515,11 +558,25 @@ Show a unified diff of the changes afterwards.
 
 Like C<-diff>, but don't actually make the changes.
 
+=head2 --inline-includes
+
+Replace C<$INCLUDE> entries with the contents of the files, while also applying
+transformations. To comply with RFC 1035, an additional C<$ORIGIN> entry will
+be added after the contents of the included file, if necessary to provide the
+correct context to the remainder of the outer file.
+
+This will recursively read files. Note that C<azu> needs to be started from the
+correct working directory if relative filename paths are used.
+
+C<--inline-includes> only works with writing the output to stdout; overwriting
+the included files themselves is intentionally not supported.
+
+Without C<--inline_includes>, any C<$INCLUDE> entry is ignored (kept as it is,
+without processing the referenced file's contents).
+
 =head1 CAVEATS
 
 =over 2
-
-=item * C<$INCLUDE> is intentionally not supported.
 
 =item * If the original SOA serial number also occurs in the same SOA record
 before the actual serial, the wrong thing is changed. This is unlikely to
