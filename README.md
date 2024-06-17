@@ -13,7 +13,7 @@ azu - Artisanal Zonefile Updater
        --add <RECORD>]             Add record before first or every match
       [--after[-first|-every] <MATCH>
        --add <RECORD>]             Add record after first or every match
-      [--replace[-first|-every] <MATCH>
+      [--replace[-first|-every|-all] <MATCH>
        --with <RECORD>             Replace first or every match
        [--delete]]                 Delete instead of comment existing record
       [--or-at-eof]                Add to end of zone file if no match
@@ -21,6 +21,7 @@ azu - Artisanal Zonefile Updater
       [--unless-match-count <N>]   Don't make changes if there are N matches
       [--raw]                      Don't parse and reformat RECORD
       [--stdout]                   Write to stdout, don't change file
+      [--inline-includes]          Process and inline $INCLUDE entries
       [--diff]                     Show unified diff afterwards
       [--diff-only]                Show unified diff, don't change file
       [--help]                     Show usage information
@@ -58,7 +59,16 @@ azu - Artisanal Zonefile Updater
     azu --add '@ TXT "google-site-verification=..."'
 
     # Update Let's Encrypt challenge
-    azu --replace-every '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+    azu --replace-all '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+
+    # Update TSLA records in current + next rollover scheme
+    azu --delete --replace-all '*._tcp.mx1 TLSA' \
+      --with "% TLSA 3 1 1 $current_fingerprint" \
+      --and  "% TLSA 3 1 1 $next_fingerprint"
+
+    # Create an "inlined" version of a zone file that has $INCLUDE entries, and sign it:
+    azu --stdout --inline-includes example.org > example.org.inlined
+    ldns-signzone example.org.inlined -f example.org.signed $zsk_file $ksk_file
 
 Typically, you would use `--increment` or `--ymd` with every invocation, and
 the name of the file to update.
@@ -78,8 +88,9 @@ zone file, it works well with `diff` and `git`.
 I wrote this tool because every other DNS changing tool that I could find would
 either reformat the zone file completely (deleting comments in the process!), or
 have extremely limited matching options. Some existing utilities also dive into
-`$INCLUDE`, while I find that in practice, I would rather not have any
-automated tool touch the include files unless that's explicitly requested.
+`$INCLUDE` unconditionally, while I find that in practice, I would rather not
+have any automated tool touch the include files unless that's explicitly
+requested.
 
 Azu was inspired by Ansible's `lineinfile`.
 
@@ -116,11 +127,12 @@ Falls back to simple +1 increment if the resulting serial number is invalid (nn
 
 Add the given record to the zone file.
 
-The given record is parsed and reformatted unless `--raw` is used; use `%` as
-the record name to keep the name that was parsed from the matching record.
+The given record is parsed and reformatted unless `--raw` is used
 
-If the matching record had an explicit TTL, it is copied over to the new
-record unless `--raw` is used.
+When used with a match condition, use `%` as the record name to keep the name
+that was parsed from the matching record. If the matching record had an
+explicit TTL, it is copied over to the new record unless `--raw` is used or
+the new record has an explicit TTL.
 
 ## --raw
 
@@ -134,7 +146,7 @@ In this case, any explicit TTL from the matched record is not carried over.
 
 ## --after\[-first|-every\] MATCH
 
-## --replace\[-first|-every\] MATCH
+## --replace\[-first|-every-all\] MATCH
 
 Selects where in the zone file to add the record provided with `--add`.
 
@@ -169,7 +181,7 @@ name parts (e.g. `ns*` will match `ns1` or `nsexample`) and subject to
 origin expansion; `*.` (including the dot) can be used to match names outside
 the file's _initial origin_.
 
-`-first` is the default if you don't specify `-first` or `every`.
+`-first` is the default if you don't specify `-first` or `-every` or `-all`.
 
 TTLs are ignored but this may change in a future version; don't use a TTL in a
 match.
@@ -182,11 +194,15 @@ the end of the file if no match was found.
 When `--add` is used without any matching rule, the given record will be added
 to the end of the zone file unconditionally.
 
-## --with RECORD
+## --with RECORD \[--and RECORD \[--and RECORD \[...\]\]
 
 `--with` is the same as `--add`, but intended for use with `--replace`.
 
-When an empty string (``), will comment the record.
+To remove a record, replace it with empty string (``). The original is kept as
+a comment, unless `--delete` is also given.
+
+Multiple new entries can be given; subsequent entries can be given with
+`--and`.
 
 ## --delete
 
@@ -217,14 +233,32 @@ Show a unified diff of the changes afterwards.
 
 Like `-diff`, but don't actually make the changes.
 
+## --inline-includes
+
+Replace `$INCLUDE` entries with the contents of the files, while also applying
+transformations. To comply with RFC 1035, an additional `$ORIGIN` entry will
+be added after the contents of the included file, if necessary to provide the
+correct context to the remainder of the outer file.
+
+This will recursively read files. Note that `azu` needs to be started from the
+correct working directory if relative filename paths are used.
+
+`--inline-includes` only works with writing the output to stdout; overwriting
+the included files themselves is intentionally not supported.
+
+Without `--inline_includes`, any `$INCLUDE` entry is ignored (kept as it is,
+without processing the referenced file's contents).
+
 # CAVEATS
 
-- `$INCLUDE` is intentionally not supported.
 - If the original SOA serial number also occurs in the same SOA record
 before the actual serial, the wrong thing is changed. This is unlikely to
 happen.
 - End-of-line comments on the same line as the matched record, are lost
 when you use `--replace --delete`.
+- When using `--replace-all` without `--delete`, the original lines are
+kept as comments, but the replacements are currently added after the first
+matching entry, rather than after the last one.
 - There is currently no way to match a wildcard record without matching
 non-wildcard records that would also match the wildcard.
 - Garbage in, garbage out. If something in the input file could not be
