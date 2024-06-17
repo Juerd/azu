@@ -10,7 +10,7 @@ use POSIX qw(strftime);
 use FindBin qw($RealBin $RealScript $Script);
 $| = 1;
 
-our $VERSION = '2.1.0';
+our $VERSION = '2.1.1';
 my $usage = "Usage: man $0\n";
 
 sub usage {
