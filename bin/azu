@@ -474,11 +474,12 @@ Falls back to simple +1 increment if the resulting serial number is invalid (nn
 
 Add the given record to the zone file.
 
-The given record is parsed and reformatted unless C<--raw> is used; use C<%> as
-the record name to keep the name that was parsed from the matching record.
+The given record is parsed and reformatted unless C<--raw> is used
 
-If the matching record had an explicit TTL, it is copied over to the new
-record unless C<--raw> is used.
+When used with a match condition, use C<%> as the record name to keep the name
+that was parsed from the matching record. If the matching record had an
+explicit TTL, it is copied over to the new record unless C<--raw> is used or
+the new record has an explicit TTL.
 
 =head2 --raw
 
