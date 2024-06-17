@@ -35,9 +35,10 @@ GetOptions(
 	'after-every=s'           => \my $after_every,
 	'replace|replace-first=s' => \my $replace,
 	'replace-every=s'         => \my $replace_every,
+	'replace-all=s'           => \my $replace_all,
 	'match=s'                 => \my $match,
 	'delete'                  => \my $delete,
-	'add|with=s'              => \my $add,
+	'add|with|and=s'          => \my @add,
 	'or-at-eof'               => \my $at_eof,
 	'if-match-count=i'        => \my $if_match_count,
 	'unless-match-count=i'    => \my $unless_match_count,
@@ -52,18 +53,22 @@ GetOptions(
 usage if $help;
 
 my $every = 0;
+my $all = 0;
 
 $increment = 1 if $ymd;
 $localtime and not $ymd and die "$0: --localtime requires --ymd\n";
 $before  and $before_every  and die "$0: Can't combine before and before_every\n";
 $after   and $after_every   and die "$0: Can't combine after and after_every\n";
 $replace and $replace_every and die "$0: Can't combine replace and replace_every\n";
+$replace and $replace_all   and die "$0: Can't combine replace and replace_all\n";
+$replace_every and $replace_all and die "$0: Can't combine replace_every and replace_all\n";
 $before  = $before_every,  $every = 1 if $before_every;
 $after   = $after_every,   $every = 1 if $after_every;
 $replace = $replace_every, $every = 1 if $replace_every;
-$before  and not defined $add and die "$0: --before requires --add\n";
-$after   and not defined $add and die "$0: --after requires --add\n";
-$replace and not defined $add and die "$0: --replace requires --with\n";
+$replace = $replace_all,   $all   = 1 if $replace_all;
+$before  and not @add and die "$0: --before requires --add\n";
+$after   and not @add and die "$0: --after requires --add\n";
+$replace and not @add and die "$0: --replace requires --with\n";
 $delete and !$replace and die "$0: --delete requires --replace\n";
 $after  and $before  and die "$0: Can't combine after and before\n";
 $after  and $replace and die "$0: Can't combine after and replace\n";
@@ -78,7 +83,7 @@ $diff and not @ARGV and die "$0: Can't use --diff with stdin\n";
 $diff_only and $stdout and die "$0: Can't combine --diff-only and --stdout\n";
 $diff = 1 if $diff_only;
 $stdout = 1 if !@ARGV and !$diff_only;
-$stdout or $increment or defined $add or die "$0: Need at least --increment, --add, or --stdout\n";
+$stdout or $increment or @add or die "$0: Need at least --increment, --add, or --stdout\n";
 $inline_includes and !$stdout and die "--inline-includes requires --stdout\n";
 
 my $regex;
@@ -99,22 +104,27 @@ sub _owner_match {
 }
 
 sub _new_rr_line {
-	my ($input, $rr, $new) = @_;
-
-	return '' if $add eq '';
+	my ($input, $rr, $new_entries) = @_;
+	my $rv = '';
 
 	if ($raw) {
-		my ($owner) = $input =~ /(\S*)/;
-		my $line = $add =~ s/^%/$owner/r;
-		return $line . "\n";
+		for my $add (@add) {
+			my ($owner) = $input =~ /(\S*)/;
+			my $line = $add =~ s/^%/$owner/r;
+			$rv .= "$line\n";
+		}
 	}
-
-	local $new->{owner} = $new->{owner};
-	local $new->{ttl} = $new->{ttl} // $rr->{ttl};
-	if (_owner_match($new->owner, '%.*')) {
-		$new->{owner} = $rr->{owner}
+	else {
+		for my $new (@$new_entries) {
+			local $new->{owner} = $new->{owner};
+			local $new->{ttl} = $new->{ttl} // $rr->{ttl};
+			if (_owner_match($new->owner, '%.*')) {
+				$new->{owner} = $rr->{owner}
+			}
+			$rv .= $new->string . "\n";
+		}
 	}
-	return $new->string . "\n";
+	return $rv;
 }
 
 my $NL = '(?:\r\n?|\r)';
@@ -142,7 +152,9 @@ sub handle_file {
 	my $search = $query ? $context->(sub { Net::DNS::RR->new($query) }) : undef;
 	my $soa_rr = $context->(sub { Net::DNS::RR->new('@ SOA') });
 
-	my $new    = $add && !$raw ? $context->(sub { Net::DNS::RR->new($add) }) : undef;
+	my @new    = @add && $add[0] && !$raw
+		? map { $context->(sub { Net::DNS::RR->new($_) }) } @add
+		: ();
 
 	my $previous;
 	my $matches = 0;
@@ -164,8 +176,8 @@ sub handle_file {
 					if ($search and not $rr_seen) {
 						$search = $context->(sub { Net::DNS::RR->new($query) });
 					}
-					if ($new and not $rr_seen) {
-						$new = $context->(sub { Net::DNS::RR->new($add) });
+					if (@new and not $rr_seen) {
+						@new = map { $context->(sub { Net::DNS::RR->new($_) }) } @add;
 					}
 					last M;
 				}
@@ -243,11 +255,11 @@ sub handle_file {
 				last M if $search->rdata and $rr->rdata ne $search->rdata;
 				last M if $regex and $rr->rdstring !~ $regex;
 
-				$positive = _new_rr_line($input, $rr, $new);
+				$positive = _new_rr_line($input, $rr, \@new);
 				$matches++;
 			};
 
-			if (defined $positive and ($every or not $done)) {
+			if (defined $positive and ($all or $every or not $done)) {
 				if ($before) {
 					$out .= $positive;
 					$out .= $input;
@@ -258,7 +270,7 @@ sub handle_file {
 					$done++;
 				} elsif ($replace) {
 					$out .= $input =~ s/(^|\cJ\cM?|\cM)(?!\z)/$1;/gr unless $delete;
-					$out .= $positive;
+					$out .= $positive unless $all and $done;
 					$done++;
 				} elsif ($match) {
 					$out .= $input;
@@ -284,9 +296,9 @@ sub handle_file {
 		die "Match count condition not met.\n";
 	}
 
-	if (!$done and $at_eof and defined $add) {
+	if (!$done and $at_eof and @add) {
 		# Use $search as base for replacing %, as last resort
-		$out .= _new_rr_line($query, $search, $new);
+		$out .= _new_rr_line($query, $search, \@new);
 	}
 
 	if ($stdout) {
@@ -348,7 +360,7 @@ azu - Artisanal Zonefile Updater
      --add <RECORD>]             Add record before first or every match
     [--after[-first|-every] <MATCH>
      --add <RECORD>]             Add record after first or every match
-    [--replace[-first|-every] <MATCH>
+    [--replace[-first|-every|-all] <MATCH>
      --with <RECORD>             Replace first or every match
      [--delete]]                 Delete instead of comment existing record
     [--or-at-eof]                Add to end of zone file if no match
@@ -394,11 +406,16 @@ azu - Artisanal Zonefile Updater
   azu --add '@ TXT "google-site-verification=..."'
 
   # Update Let's Encrypt challenge
-  azu --replace-every '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+  azu --replace-all '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+
+  # Update TSLA records in current + next rollover scheme
+  azu --delete --replace-all '*._tcp.mx1 TLSA' \
+    --with "% TLSA 3 1 1 $current_fingerprint" \
+    --and  "% TLSA 3 1 1 $next_fingerprint"
 
   # Create an "inlined" version of a zone file that has $INCLUDE entries, and sign it:
   azu --stdout --inline-includes example.org > example.org.inlined
-  ldns-signzone example.org.inlined -f example.org.signed $zskfile $kskfile
+  ldns-signzone example.org.inlined -f example.org.signed $zsk_file $ksk_file
 
 Typically, you would use C<--increment> or C<--ymd> with every invocation, and
 the name of the file to update.
@@ -475,7 +492,7 @@ In this case, any explicit TTL from the matched record is not carried over.
 
 =head2 --after[-first|-every] MATCH
 
-=head2 --replace[-first|-every] MATCH
+=head2 --replace[-first|-every-all] MATCH
 
 Selects where in the zone file to add the record provided with C<--add>.
 
@@ -510,7 +527,7 @@ name parts (e.g. C<ns*> will match C<ns1> or C<nsexample>) and subject to
 origin expansion; C<*.> (including the dot) can be used to match names outside
 the file's I<initial origin>.
 
-C<-first> is the default if you don't specify C<-first> or C<every>.
+C<-first> is the default if you don't specify C<-first> or C<-every> or C<-all>.
 
 TTLs are ignored but this may change in a future version; don't use a TTL in a
 match.
@@ -523,11 +540,15 @@ the end of the file if no match was found.
 When C<--add> is used without any matching rule, the given record will be added
 to the end of the zone file unconditionally.
 
-=head2 --with RECORD
+=head2 --with RECORD [--and RECORD [--and RECORD [...]]
 
 C<--with> is the same as C<--add>, but intended for use with C<--replace>.
 
-When an empty string (C<>), will comment the record.
+To remove a record, replace it with empty string (C<>). The original is kept as
+a comment, unless C<--delete> is also given.
+
+Multiple new entries can be given; subsequent entries can be given with
+C<--and>.
 
 =head2 --delete
 
@@ -584,6 +605,10 @@ happen.
 
 =item * End-of-line comments on the same line as the matched record, are lost
 when you use C<--replace --delete>.
+
+=item * When using C<--replace-all> without C<--delete>, the original lines are
+kept as comments, but the replacements are currently added after the first
+matching entry, rather than after the last one.
 
 =item * There is currently no way to match a wildcard record without matching
 non-wildcard records that would also match the wildcard.
