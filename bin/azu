@@ -406,12 +406,13 @@ azu - Artisanal Zonefile Updater
   azu --add '@ TXT "google-site-verification=..."'
 
   # Update Let's Encrypt challenge
-  azu --replace-all '_acme-challenge TXT' --with '_acme-challenge TXT "..."'
+  azu --replace-all '_acme-challenge TXT' --with '_acme-challenge TXT "..."' --or-at-eof
 
   # Update TSLA records in current + next rollover scheme
   azu --delete --replace-all '*._tcp.mx1 TLSA' \
     --with "% TLSA 3 1 1 $current_fingerprint" \
-    --and  "% TLSA 3 1 1 $next_fingerprint"
+    --and  "% TLSA 3 1 1 $next_fingerprint" \
+    --or-at-eof
 
   # Create an "inlined" version of a zone file that has $INCLUDE entries, and sign it:
   azu --stdout --inline-includes example.org > example.org.inlined
@@ -493,7 +494,7 @@ In this case, any explicit TTL from the matched record is not carried over.
 
 =head2 --after[-first|-every] MATCH
 
-=head2 --replace[-first|-every-all] MATCH
+=head2 --replace[-first|-every|-all] MATCH
 
 Selects where in the zone file to add the record provided with C<--add>.
 
